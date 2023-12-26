@@ -1,0 +1,13 @@
+---
+title: "trivariatemap"
+author: "Fitrah Ramadhan"
+date: "2023-12-26"
+output: html_document
+---
+
+```{r}
+
+
+
+```
+
