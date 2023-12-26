@@ -5,9 +5,213 @@ date: "2023-12-26"
 output: html_document
 ---
 
+### Import Packages
+
+```{r include=FALSE}
+
+#libraries needed
+libs <- c('tidyverse','sf','janitor','biscale','ggplot2','cowplot')
+
+#install missing libraries
+installed_libs <- libs %in% rownames(installed.packages())
+if(any(installed_libs == F)) {
+  install.packages(lib[!installed_libs])
+}
+
+#load packages
+invisible(lapply(libs, library, character.only = T))
+
+#check version
+checkversion <- function(packages) {
+  print(paste(packages, " : ", packageVersion(packages)))
+}
+
+invisible(lapply(libs, checkversion))
+```
+
+### Import Data
+
+```{r include=FALSE}
+
+pbcc <- read_csv('https://www.dropbox.com/scl/fi/6l1i80t0thka7ldgmnzm1/PBCC_LSOA_data.csv?rlkey=reg0mbe6b9inp5586iugxxhk4&dl=1') %>%
+  janitor::clean_names() %>%
+  dplyr::select('lsoa11', 'lsoa11nm','soac11nm', 'lad17cd', 'lad17nm', 'wd18nm', 'pop_2018', 'total_kgco2e_percap','km_car_or_van')
+
+lsoa <- sf::st_read('https://www.dropbox.com/scl/fi/vvwhjbrl8c9akc8x5qoc6/lsoa_england.gpkg?rlkey=qarh74y8hmn0eaxu81inlbafb&dl=1') %>% st_transform(27700)
+
+london_border <- sf::st_read('https://www.dropbox.com/scl/fi/j2f42gri152net15zqu0e/london_border.gpkg?rlkey=di3lf5tdbca14nehie3cdks3q&dl=1') %>% st_transform(27700)
+```
+
 ```{r}
 
-
+lsoa_london <- lsoa %>%
+  dplyr::left_join(., pbcc, join_by('code' == 'lsoa11')) %>%
+  dplyr::select('code','name','soac11nm','pop_2018', 'total_kgco2e_percap','km_car_or_van') %>%
+  dplyr::mutate(pop_density = as.numeric(pop_2018/st_area(.))) %>%
+  sf::st_intersection(., london_border)
 
 ```
 
+### Scenario 1: Visualizing by Wards
+
+#### Bivariate Analysis
+
+```{r}
+
+lsoa_london <- biscale::bi_class(lsoa_london, x = total_kgco2e_percap, y = km_car_or_van, style='fisher' , dim = 4) %>%
+  rowid_to_column(., var = 'id')
+
+```
+
+```{r}
+
+# Calculate the centroid of the Multipolygon
+london_lsoa_centroid <- st_centroid(lsoa_london$geom)
+
+# Create a GeoDataFrame with the centroid
+london_lsoa_centroid <- st_sf(geometry = london_lsoa_centroid) %>%
+  rowid_to_column(., var='id')
+
+# join attribute to centroid
+london_lsoa_attribute <- lsoa_london %>%
+  st_drop_geometry(.)
+
+london_lsoa_centroid <- london_lsoa_centroid %>%
+  dplyr::left_join(., london_lsoa_attribute, by = 'id')
+
+```
+
+```{r}
+
+mapunit1 <- ggplot() +
+  geom_sf(data = lsoa_london, fill = 'gray', color = 'white', show.legend = FALSE) +
+  theme_void()
+
+print(mapunit1)
+
+ggsave("mapunit1.png", plot = mapunit1, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+```{r}
+
+# create map
+map1 <- ggplot() +
+  geom_sf(data = london_lsoa_centroid, aes(color = bi_class, size = pop_density), show.legend = FALSE, alpha = 0.7) +
+  geom_point(position = position_jitter(width = 0.1, height = 0.1)) +
+  bi_scale_color(pal = "BlueGold", dim = 4) +
+  bi_theme()
+
+legend1 <- bi_legend(pal = "BlueGold",
+                    dim = 4,
+                    xlab = "Carfoot ",
+                    ylab = "KM_Car ",
+                    size = 6.5)
+
+# combine map with legend
+finalPlot1 <- cowplot::ggdraw() +
+  draw_plot(map1, 0, 0, 1, 1) +
+  draw_plot(legend1, 0, 0, 0.25, 0.25)
+
+print(finalPlot1)
+
+ggsave("finalPlot1.png", plot = map1, width = 8, height = 6, units = "in", dpi = 300)
+ggsave("legend.png", plot = legend1, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+### Scenario 2: Convert the Wards into Hexagonal Grid, and Visualization
+
+```{r}
+
+london_hex <- sf::st_make_grid(london_border,
+                               cellsize = 2000,
+                               what = 'polygons',
+                               square = F) %>%
+  st_intersection(london_border) %>%
+  st_sf() %>%
+  dplyr::mutate(id = row_number()) %>%
+  filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) %>%
+  st_cast("MULTIPOLYGON")
+```
+
+```{r}
+
+london_hex <- london_hex %>%
+  sf::st_join(., lsoa_london)
+
+```
+
+```{r}
+
+london_hex <- london_hex %>%
+  group_by(geometry) %>%
+  dplyr::summarise(
+    m_pop_density = mean(pop_density),
+    m_total_carfoot = mean(total_kgco2e_percap),
+    m_km_car = mean(km_car_or_van)
+  )
+```
+
+#### Bivariate Analysis
+
+```{r}
+
+
+london_hex <- biscale::bi_class(london_hex, x = m_total_carfoot, y = m_km_car, style='fisher' , dim = 4) %>%
+  rowid_to_column(., var = 'id')
+```
+
+```{r}
+
+mapunit2 <- ggplot() +
+  geom_sf(data = london_hex, fill = 'gray', color = 'white', show.legend = FALSE) +
+  theme_void()
+
+print(mapunit2)
+
+ggsave("mapunit2.png", plot = mapunit2, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+```{r}
+
+# Calculate the centroid of the Multipolygon
+london_hex_centroid <- st_centroid(london_hex$geometry)
+
+# Create a GeoDataFrame with the centroid
+london_hex_centroid <- st_sf(geometry = london_hex_centroid) %>%
+  rowid_to_column(., var='id')
+
+# join attribute to centroid
+london_hex_attribute <- london_hex %>%
+  st_drop_geometry(.)
+
+london_hex_centroid <- london_hex_centroid %>%
+  dplyr::left_join(., london_hex_attribute, by = 'id')
+
+```
+
+```{r}
+
+
+# create map
+map2 <- ggplot() +
+  geom_sf(data = london_hex_centroid, aes(color = bi_class, size = m_pop_density), show.legend = FALSE) +
+  geom_point(alpha = 0.7, position = position_jitter(width = 0.1, height = 0.1)) +
+  bi_scale_color(pal = "BlueGold", dim = 4) +
+  bi_theme() 
+  
+
+legend2 <- bi_legend(pal = "BlueGold",
+                    dim = 4,
+                    xlab = "Carfoot ",
+                    ylab = "KM_Car ",
+                    size = 6.5)
+
+# combine map with legend
+finalPlot2 <- cowplot::ggdraw() +
+  draw_plot(map2, 0, 0, 1, 1) +
+  draw_plot(legend2, 0, 0, 0.25, 0.25)
+
+print(finalPlot2)
+
+ggsave("finalPlot2.png", plot = map2, width = 8, height = 6, units = "in", dpi = 300)
+```
